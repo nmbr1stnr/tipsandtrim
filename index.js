@@ -48,6 +48,10 @@ app.post('/create-connected-account', async (req, res) => {
   }
 });
 
+app.get("/", (req, res) => {
+  res.send("Tips & Trim API is live!");
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
