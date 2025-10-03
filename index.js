@@ -3,7 +3,9 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1);
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
+  apiVersion: '2025-09-30.preview',
+});
 const app = express();
 const PORT = process.env.PORT || 3000;
 
