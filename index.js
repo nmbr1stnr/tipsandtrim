@@ -18,12 +18,21 @@ const mappingsPath = '/data/mappings.json';
 app.use(bodyParser.json());
 
 // Ensure mappings file exists
-if (!fs.existsSync(mappingsPath)) {
-  fs.writeFileSync(mappingsPath, '{}');
+try {
+  if (!fs.existsSync(mappingsPath)) {
+    fs.writeFileSync(mappingsPath, '{}');
+    console.log('✅ Created mappings.json on first run.');
+  }
+} catch (err) {
+  console.error('❌ Error ensuring mappings file exists:', err);
 }
 
 app.post('/create-connected-account', async (req, res) => {
   const { name, email, row_id } = req.body;
+
+  if (!email || !row_id) {
+    return res.status(400).json({ error: 'Missing required fields: email or row_id' });
+  }
 
   try {
     // 1. Create a connected Stripe account
@@ -42,7 +51,13 @@ app.post('/create-connected-account', async (req, res) => {
     });
 
     // 2. Read, update, and save the mapping to /data/mappings.json
-    const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+    let mappings = {};
+    try {
+      mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+    } catch (err) {
+      console.warn('⚠️ Could not read mappings.json, using empty object');
+    }
+
     mappings[row_id] = account.id;
     fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2));
 
@@ -56,15 +71,16 @@ app.post('/create-connected-account', async (req, res) => {
 
     res.json({ onboarding_url: accountLink.url });
   } catch (error) {
-    console.error(error);
+    console.error('❌ Stripe account creation error:', error);
     res.status(500).json({ error: 'Something went wrong.' });
   }
 });
 
+// Simple status route
 app.get("/", (req, res) => {
   res.send("Tips & Trim API is live!");
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
