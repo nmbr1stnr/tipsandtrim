@@ -2,14 +2,25 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
+const path = require('path');
 
+// Stripe setup
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
   apiVersion: '2025-09-30.preview',
 });
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Mappings file will be stored in the Render Disk
+const mappingsPath = '/data/mappings.json';
+
 app.use(bodyParser.json());
+
+// Ensure mappings file exists
+if (!fs.existsSync(mappingsPath)) {
+  fs.writeFileSync(mappingsPath, '{}');
+}
 
 app.post('/create-connected-account', async (req, res) => {
   const { name, email, row_id } = req.body;
@@ -30,10 +41,10 @@ app.post('/create-connected-account', async (req, res) => {
       },
     });
 
-    // 2. Save mapping to local file (temp method)
-    const mappings = JSON.parse(fs.readFileSync('mappings.json', 'utf8'));
+    // 2. Read, update, and save the mapping to /data/mappings.json
+    const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
     mappings[row_id] = account.id;
-    fs.writeFileSync('mappings.json', JSON.stringify(mappings, null, 2));
+    fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2));
 
     // 3. Create onboarding link
     const accountLink = await stripe.accountLinks.create({
