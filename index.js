@@ -3,6 +3,8 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch'); // Add node-fetch for outbound API calls
+const cors = require('cors');
 
 // Stripe setup
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
@@ -12,10 +14,20 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Mappings file will be stored in the Render Disk
+// Enable CORS (optional but helpful)
+app.use(cors());
+
+// Mappings file path on Render disk
 const mappingsPath = '/data/mappings.json';
 
-app.use(bodyParser.json());
+// Conditional body parser to avoid conflict with webhook raw body
+app.use((req, res, next) => {
+  if (req.originalUrl === '/webhook') {
+    next(); // Skip JSON parsing for raw webhook
+  } else {
+    bodyParser.json()(req, res, next);
+  }
+});
 
 // Ensure mappings file exists
 try {
@@ -27,6 +39,7 @@ try {
   console.error('❌ Error ensuring mappings file exists:', err);
 }
 
+// Create connected account and onboarding link
 app.post('/create-connected-account', async (req, res) => {
   const { name, email, row_id } = req.body;
 
@@ -35,7 +48,6 @@ app.post('/create-connected-account', async (req, res) => {
   }
 
   try {
-    // 1. Create a connected Stripe account
     const account = await stripe.accounts.create({
       type: 'express',
       country: 'US',
@@ -50,18 +62,18 @@ app.post('/create-connected-account', async (req, res) => {
       },
     });
 
-    // 2. Read, update, and save the mapping to /data/mappings.json
+    // Store mapping
     let mappings = {};
     try {
       mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
-    } catch (err) {
-      console.warn('⚠️ Could not read mappings.json, using empty object');
+    } catch {
+      console.warn('⚠️ Could not read mappings.json, starting fresh');
     }
 
     mappings[row_id] = account.id;
     fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2));
 
-    // 3. Create onboarding link
+    // Generate onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: 'https://tipsandtrim.com/reauth',
@@ -76,9 +88,63 @@ app.post('/create-connected-account', async (req, res) => {
   }
 });
 
-// Simple status route
-app.get("/", (req, res) => {
-  res.send("Tips & Trim API is live!");
+// Webhook for onboarding completion
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  let event;
+  try {
+    event = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+  } catch (err) {
+    console.error('❌ Webhook error:', err.message);
+    return res.status(400).send(`Webhook error: ${err.message}`);
+  }
+
+  if (event.type === 'account.updated') {
+    const account = event.data.object;
+
+    if (account.charges_enabled && account.payouts_enabled && account.details_submitted) {
+      console.log(`✅ Onboarding completed for account ${account.id}`);
+
+      let mappings = {};
+      try {
+        mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
+      } catch (err) {
+        console.error('❌ Failed to read mappings.json');
+        return res.sendStatus(500);
+      }
+
+      const row_id = Object.keys(mappings).find(key => mappings[key] === account.id);
+      if (!row_id) {
+        console.warn(`⚠️ No mapping found for account ID: ${account.id}`);
+        return res.sendStatus(200);
+      }
+
+      try {
+        const loginLink = await stripe.accounts.createLoginLink(account.id);
+
+        // Replace with your actual Glide webhook endpoint
+        await fetch('https://your-glide-webhook-url.com', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            row_id: row_id,
+            stripe_dashboard_url: loginLink.url,
+            is_onboarded: true,
+          }),
+        });
+
+        console.log(`🚀 Sent login link to Glide for row_id: ${row_id}`);
+      } catch (err) {
+        console.error('❌ Failed to send login link to Glide:', err);
+      }
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+// Health check route
+app.get('/', (req, res) => {
+  res.send('Tips & Trim API is live!');
 });
 
 app.listen(PORT, () => {
