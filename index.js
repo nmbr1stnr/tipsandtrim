@@ -122,11 +122,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         const loginLink = await stripe.accounts.createLoginLink(account.id);
 
         // Replace with your actual Glide webhook endpoint
-        await fetch('https://your-glide-webhook-url.com', {
+        await fetch('https://go.glideapps.com/api/container/plugin/webhook-trigger/BDkkdHH3iqEDpVk1nljo/450f83fd-40a3-4b95-b0c5-9ab87cad56cb-webhook-url.com', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            row_id: row_id,
+            email: email,
             stripe_dashboard_url: loginLink.url,
             is_onboarded: true,
           }),
