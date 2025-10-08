@@ -36,10 +36,13 @@ if (!fs.existsSync(mappingsPath)) {
 app.post('/create-connected-account', async (req, res) => {
   let data;
 
-  // Try parsing from body.body (Glide), or fallback to body, or query
   try {
+    // Handle multiple payload formats (Glide, JSON, Query)
     if (typeof req.body.body === 'string') {
-      data = JSON.parse(req.body.body);
+      let fixed = req.body.body.trim();
+      if (!fixed.startsWith('{')) fixed = '{' + fixed;
+      if (!fixed.endsWith('}')) fixed = fixed + '}';
+      data = JSON.parse(fixed);
     } else if (typeof req.body.body === 'object') {
       data = req.body.body;
     } else if (typeof req.body === 'object' && Object.keys(req.body).length > 0) {
@@ -48,8 +51,8 @@ app.post('/create-connected-account', async (req, res) => {
       data = req.query;
     }
   } catch (err) {
-    console.error('❌ Failed to parse body:', err.message);
-    return res.status(400).json({ error: 'Invalid JSON format in request body' });
+    console.error('❌ Failed to parse incoming body:', req.body.body || req.body);
+    return res.status(400).json({ error: 'Invalid or malformed JSON body' });
   }
 
   const {
@@ -66,7 +69,7 @@ app.post('/create-connected-account', async (req, res) => {
   }
 
   try {
-    // Create Stripe connected account
+    // 1️⃣ Create Stripe connected account
     const account = await stripe.accounts.create({
       type,
       country: 'US',
@@ -81,12 +84,12 @@ app.post('/create-connected-account', async (req, res) => {
       }
     });
 
-    // Save the mapping
+    // 2️⃣ Save the mapping
     const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8') || '{}');
     mappings[employee_row_id] = account.id;
     fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2));
 
-    // Create onboarding link
+    // 3️⃣ Create onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: 'https://tipsandtrim.com/reauth',
@@ -96,8 +99,8 @@ app.post('/create-connected-account', async (req, res) => {
 
     res.json({ onboarding_url: accountLink.url });
   } catch (err) {
-    console.error('❌ Stripe error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('❌ Stripe account creation error:', err);
+    res.status(500).json({ error: 'Something went wrong while creating the account.' });
   }
 });
 
