@@ -41,18 +41,26 @@ try {
 
 // Create connected account and onboarding link
 app.post('/create-connected-account', async (req, res) => {
-  const { name, email, row_id } = req.body;
+  // Handle both Glide-style and standard JSON payloads
+  const data = req.body.body || req.body;
 
-  if (!email || !row_id) {
-    return res.status(400).json({ error: 'Missing required fields: email or row_id' });
+  if (!data) {
+    return res.status(400).json({ error: 'Missing request body or data' });
+  }
+
+  const { employee_row_id, name, email, employer_email, type, business_type } = data;
+
+  if (!email || !employee_row_id) {
+    return res.status(400).json({ error: 'Missing required fields: email or employee_row_id' });
   }
 
   try {
+    // 1. Create Stripe connected account
     const account = await stripe.accounts.create({
-      type: 'express',
+      type: type || 'express',
       country: 'US',
       email,
-      business_type: 'individual',
+      business_type: business_type || 'individual',
       capabilities: {
         card_payments: { requested: true },
         transfers: { requested: true },
@@ -62,7 +70,7 @@ app.post('/create-connected-account', async (req, res) => {
       },
     });
 
-    // Store mapping
+    // 2. Store mapping
     let mappings = {};
     try {
       mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8'));
@@ -70,10 +78,10 @@ app.post('/create-connected-account', async (req, res) => {
       console.warn('⚠️ Could not read mappings.json, starting fresh');
     }
 
-    mappings[row_id] = account.id;
+    mappings[employee_row_id] = account.id;
     fs.writeFileSync(mappingsPath, JSON.stringify(mappings, null, 2));
 
-    // Generate onboarding link
+    // 3. Generate onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: 'https://tipsandtrim.com/reauth',
@@ -112,8 +120,8 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         return res.sendStatus(500);
       }
 
-      const row_id = Object.keys(mappings).find(key => mappings[key] === account.id);
-      if (!row_id) {
+      const employee_row_id = Object.keys(mappings).find(key => mappings[key] === account.id);
+      if (!employee_row_id) {
         console.warn(`⚠️ No mapping found for account ID: ${account.id}`);
         return res.sendStatus(200);
       }
@@ -121,18 +129,18 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       try {
         const loginLink = await stripe.accounts.createLoginLink(account.id);
 
-        // Replace with your actual Glide webhook endpoint
+        // Send update back to Glide
         await fetch('https://go.glideapps.com/api/container/plugin/webhook-trigger/BDkkdHH3iqEDpVk1nljo/450f83fd-40a3-4b95-b0c5-9ab87cad56cb-webhook-url.com', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            email: email,
+            employee_row_id: employee_row_id,
             stripe_dashboard_url: loginLink.url,
             is_onboarded: true,
           }),
         });
 
-        console.log(`🚀 Sent login link to Glide for row_id: ${row_id}`);
+        console.log(`🚀 Sent login link to Glide for employee_row_id: ${employee_row_id}`);
       } catch (err) {
         console.error('❌ Failed to send login link to Glide:', err);
       }
