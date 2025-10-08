@@ -185,10 +185,8 @@ app.get('/get-remediation-link', async (req, res) => {
       type: 'account_onboarding',
     });
 
-    res.json({
-      employee_row_id,
-      remediation_url: remediationLink.url,
-    });
+res.send(remediationLink.url);
+    
   } catch (err) {
     console.error('❌ Failed to get remediation link:', err.message);
     res.status(500).json({ error: 'Unable to fetch remediation link' });
