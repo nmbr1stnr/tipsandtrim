@@ -11,21 +11,26 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(cors());
 
-// Glide constants from environment
+// ✅ Environment Variables
 const GLIDE_APP_ID = process.env.GLIDE_APP_ID;
 const GLIDE_SECRET = process.env.GLIDE_SECRET;
 const EMPLOYEES_TABLE_ID = 'native-table-eb1ef03e-3d89-4ee9-a5df-950f57dfebe5';
-const STRIPE_SETUP_COL_ID = 'MTVQD'; // Confirm this stays consistent
+const STRIPE_SETUP_COL_ID = 'MTVQD'; // Column ID for 'stripeSetupLink' in Glide
 
-// Disable bodyParser globally to handle raw
+if (!GLIDE_APP_ID || !GLIDE_SECRET || !process.env.STRIPE_SECRET_KEY_1) {
+  console.warn('⚠️ One or more environment variables are missing (GLIDE_APP_ID, GLIDE_SECRET, STRIPE_SECRET_KEY_1)');
+}
+
+// 🔧 Middleware: Handle raw body for specific route
 app.use((req, res, next) => {
   if (req.originalUrl === '/create-connected-account') {
-    next(); // raw read only
+    next(); // Skip JSON parsing
   } else {
     express.json()(req, res, next);
   }
 });
 
+// 📦 Helper: Read raw body safely
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -35,6 +40,7 @@ function readRawBody(req) {
   });
 }
 
+// ✏️ Helper: Update a Glide row with Stripe onboarding URL
 async function updateGlideStripeLink(employeeRowId, setupUrl) {
   const response = await fetch(`https://api.glideapp.io/api/function/mutate`, {
     method: 'POST',
@@ -48,29 +54,56 @@ async function updateGlideStripeLink(employeeRowId, setupUrl) {
         {
           kind: 'set-column-values',
           table: EMPLOYEES_TABLE_ID,
-          columnValues: { [STRIPE_SETUP_COL_ID]: setupUrl },
           rowID: employeeRowId,
+          columnValues: {
+            [STRIPE_SETUP_COL_ID]: setupUrl,
+          },
         },
       ],
     }),
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update Glide row: ${await response.text()}`);
+    const errorText = await response.text();
+    throw new Error(`❌ Glide update failed: ${errorText}`);
   }
 
   return true;
 }
 
+// 🚀 Create Stripe Connected Account & Send Link to Glide
 app.post('/create-connected-account', async (req, res) => {
+  let rawBody = '';
   let data = {};
+
   try {
-    const rawBody = await readRawBody(req);
-    const parsed = JSON.parse(rawBody.trim());
-    data = typeof parsed.body === 'string' ? JSON.parse(parsed.body) : parsed.body || parsed;
+    rawBody = await readRawBody(req);
+
+    if (rawBody && rawBody.trim()) {
+      let fixed = rawBody.trim();
+
+      // Handle if Glide wraps body inside "body"
+      if (fixed.startsWith('{') && fixed.includes('"body":')) {
+        const parsed = JSON.parse(fixed);
+        fixed = typeof parsed.body === 'string' ? parsed.body : JSON.stringify(parsed.body);
+      }
+
+      // Ensure valid JSON structure
+      if (!fixed.startsWith('{')) fixed = '{' + fixed;
+      if (!fixed.endsWith('}')) fixed = fixed + '}';
+
+      data = JSON.parse(fixed);
+    } else {
+      // 🌐 Fallback: Read from query string
+      data = {
+        name: req.query['Employee Name']?.value || '',
+        email: req.query['Email']?.value || '',
+        employee_row_id: req.query['🔒 Row ID']?.value || '',
+      };
+    }
   } catch (err) {
     console.error('❌ Body parse error:', err.message);
-    return res.status(400).json({ error: 'Malformed request body' });
+    return res.status(400).json({ error: 'Invalid or malformed JSON or query string' });
   }
 
   const {
@@ -83,11 +116,11 @@ app.post('/create-connected-account', async (req, res) => {
   } = data;
 
   if (!employee_row_id || !email) {
-    return res.status(400).json({ error: 'Missing employee_row_id or email' });
+    return res.status(400).json({ error: 'Missing required: employee_row_id or email' });
   }
 
   try {
-    // Create Stripe connected account
+    // 1️⃣ Create connected Stripe account
     const account = await stripe.accounts.create({
       type,
       country: 'US',
@@ -97,11 +130,15 @@ app.post('/create-connected-account', async (req, res) => {
         card_payments: { requested: true },
         transfers: { requested: true },
       },
-      business_profile: { url: 'https://tipsandtrim.com' },
-      metadata: { employee_row_id },
+      business_profile: {
+        url: 'https://tipsandtrim.com',
+      },
+      metadata: {
+        employee_row_id: String(employee_row_id),
+      },
     });
 
-    // Create onboarding link
+    // 2️⃣ Create onboarding link
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: 'https://tipsandtrim.com/reauth',
@@ -109,15 +146,20 @@ app.post('/create-connected-account', async (req, res) => {
       type: 'account_onboarding',
     });
 
-    // Push onboarding link to Glide row
+    // 3️⃣ Push link to Glide
     await updateGlideStripeLink(employee_row_id, accountLink.url);
-    res.json({ onboarding_url: accountLink.url });
+
+    // ✅ All done
+    res.json({
+      onboarding_url: accountLink.url,
+      message: `Stripe account created and onboarding URL sent to Glide row ${employee_row_id}`,
+    });
   } catch (err) {
     console.error('❌ Stripe account creation failed:', err.message);
-    res.status(500).json({ error: 'Could not create Stripe account' });
+    res.status(500).json({ error: 'Failed to create Stripe account or update Glide' });
   }
 });
 
-// Health check
+// ✅ Health Check
 app.get('/', (req, res) => res.send('Tips & Trim API is live!'));
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
