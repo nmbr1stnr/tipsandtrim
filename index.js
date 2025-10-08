@@ -3,7 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch'); // Add node-fetch for outbound API calls
+const fetch = require('node-fetch');
 const cors = require('cors');
 
 // Stripe setup
@@ -41,8 +41,18 @@ try {
 
 // Create connected account and onboarding link
 app.post('/create-connected-account', async (req, res) => {
-  // Handle both Glide-style and standard JSON payloads
-  const data = req.body.body || req.body;
+  let data = req.body.body || req.body;
+
+  // Handle malformed Glide payload (string body without braces)
+  if (typeof data === 'string') {
+    try {
+      if (!data.trim().startsWith('{')) data = `{${data}}`;
+      data = JSON.parse(data);
+    } catch (err) {
+      console.error('❌ Invalid JSON format in request body:', data);
+      return res.status(400).json({ error: 'Invalid JSON body format' });
+    }
+  }
 
   if (!data) {
     return res.status(400).json({ error: 'Missing request body or data' });
@@ -53,6 +63,8 @@ app.post('/create-connected-account', async (req, res) => {
   if (!email || !employee_row_id) {
     return res.status(400).json({ error: 'Missing required fields: email or employee_row_id' });
   }
+
+  console.log('✅ Parsed incoming data:', data);
 
   try {
     // 1. Create Stripe connected account
@@ -89,6 +101,7 @@ app.post('/create-connected-account', async (req, res) => {
       type: 'account_onboarding',
     });
 
+    console.log(`🚀 Created onboarding link for ${email}`);
     res.json({ onboarding_url: accountLink.url });
   } catch (error) {
     console.error('❌ Stripe account creation error:', error);
@@ -134,7 +147,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            employee_row_id: employee_row_id,
+            employee_row_id,
             stripe_dashboard_url: loginLink.url,
             is_onboarded: true,
           }),
