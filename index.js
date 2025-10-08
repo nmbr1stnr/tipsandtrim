@@ -161,3 +161,36 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 // 🌐 Health check route
 app.get('/', (req, res) => res.send('Tips & Trim API is live!'));
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// 🔁 Retrieve Stripe Remediation (Onboarding) Link
+app.get('/get-remediation-link', async (req, res) => {
+  const { employee_row_id } = req.query;
+
+  if (!employee_row_id) {
+    return res.status(400).json({ error: 'Missing employee_row_id in query' });
+  }
+
+  try {
+    const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8') || '{}');
+    const accountId = mappings[employee_row_id];
+
+    if (!accountId) {
+      return res.status(404).json({ error: `No Stripe account found for row ID ${employee_row_id}` });
+    }
+
+    const remediationLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: 'https://tipsandtrim.com/reauth',
+      return_url: 'https://tipsandtrim.com/return',
+      type: 'account_onboarding',
+    });
+
+    res.json({
+      employee_row_id,
+      remediation_url: remediationLink.url,
+    });
+  } catch (err) {
+    console.error('❌ Failed to get remediation link:', err.message);
+    res.status(500).json({ error: 'Unable to fetch remediation link' });
+  }
+});
