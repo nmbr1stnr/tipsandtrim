@@ -1,11 +1,9 @@
 require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
 const cors = require('cors');
-
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
   apiVersion: '2025-09-30.preview',
 });
@@ -14,44 +12,58 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(cors());
 
-// Path for mapping Stripe accounts to Glide Row IDs
 const mappingsPath = '/data/mappings.json';
 
-// Body parser — skip for raw webhook requests
-app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook') {
-    next();
-  } else {
-    bodyParser.json()(req, res, next);
-  }
-});
-
-// Ensure the mappings file exists
+// Ensure mappings file exists
 if (!fs.existsSync(mappingsPath)) {
   fs.writeFileSync(mappingsPath, '{}');
   console.log('✅ Created mappings.json on first run.');
 }
 
+// Disable bodyParser globally; handle raw reads manually
+app.use((req, res, next) => {
+  if (req.originalUrl === '/webhook' || req.originalUrl === '/create-connected-account') {
+    next(); // Skip default JSON parsing
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
+// 🧠 Helper: read raw body data safely
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => (body += chunk.toString()));
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 // 🔧 Create Stripe Connected Account
 app.post('/create-connected-account', async (req, res) => {
-  let data;
+  let rawBody = '';
+  let data = {};
 
   try {
-    // Handle multiple payload formats (Glide, JSON, Query)
-    if (typeof req.body.body === 'string') {
-      let fixed = req.body.body.trim();
-      if (!fixed.startsWith('{')) fixed = '{' + fixed;
-      if (!fixed.endsWith('}')) fixed = fixed + '}';
-      data = JSON.parse(fixed);
-    } else if (typeof req.body.body === 'object') {
-      data = req.body.body;
-    } else if (typeof req.body === 'object' && Object.keys(req.body).length > 0) {
-      data = req.body;
-    } else {
-      data = req.query;
+    rawBody = await readRawBody(req);
+    if (!rawBody) throw new Error('Empty body');
+
+    // Handle cases like ""employee_row_id": "abc"..."
+    let fixed = rawBody.trim();
+
+    // If Glide wraps JSON inside another "body" field
+    if (fixed.startsWith('{') && fixed.includes('"body":')) {
+      const parsed = JSON.parse(fixed);
+      fixed = typeof parsed.body === 'string' ? parsed.body : JSON.stringify(parsed.body);
     }
+
+    // Ensure braces
+    if (!fixed.startsWith('{')) fixed = '{' + fixed;
+    if (!fixed.endsWith('}')) fixed = fixed + '}';
+
+    data = JSON.parse(fixed);
   } catch (err) {
-    console.error('❌ Failed to parse incoming body:', req.body.body || req.body);
+    console.error('❌ Failed to parse incoming body:', rawBody);
     return res.status(400).json({ error: 'Invalid or malformed JSON body' });
   }
 
@@ -61,7 +73,7 @@ app.post('/create-connected-account', async (req, res) => {
     email,
     employer_email = '',
     type = 'express',
-    business_type = 'individual'
+    business_type = 'individual',
   } = data;
 
   if (!employee_row_id || !email) {
@@ -77,11 +89,9 @@ app.post('/create-connected-account', async (req, res) => {
       business_type,
       capabilities: {
         card_payments: { requested: true },
-        transfers: { requested: true }
+        transfers: { requested: true },
       },
-      business_profile: {
-        url: 'https://tipsandtrim.com'
-      }
+      business_profile: { url: 'https://tipsandtrim.com' },
     });
 
     // 2️⃣ Save the mapping
@@ -94,7 +104,7 @@ app.post('/create-connected-account', async (req, res) => {
       account: account.id,
       refresh_url: 'https://tipsandtrim.com/reauth',
       return_url: 'https://tipsandtrim.com/return',
-      type: 'account_onboarding'
+      type: 'account_onboarding',
     });
 
     res.json({ onboarding_url: accountLink.url });
@@ -104,7 +114,7 @@ app.post('/create-connected-account', async (req, res) => {
   }
 });
 
-// ✅ Webhook to detect completed onboarding
+// ✅ Webhook for onboarding completion
 app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   let event;
   try {
@@ -116,15 +126,13 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
   if (event.type === 'account.updated') {
     const account = event.data.object;
-
     if (account.charges_enabled && account.payouts_enabled && account.details_submitted) {
       console.log(`✅ Onboarding complete for account ${account.id}`);
 
       const mappings = JSON.parse(fs.readFileSync(mappingsPath, 'utf8') || '{}');
-      const employee_row_id = Object.keys(mappings).find(key => mappings[key] === account.id);
-
+      const employee_row_id = Object.keys(mappings).find(k => mappings[k] === account.id);
       if (!employee_row_id) {
-        console.warn(`⚠️ No matching row ID for account ID: ${account.id}`);
+        console.warn(`⚠️ No mapping found for ${account.id}`);
         return res.sendStatus(200);
       }
 
@@ -137,8 +145,8 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           body: JSON.stringify({
             employee_row_id,
             stripe_dashboard_url: loginLink.url,
-            is_onboarded: true
-          })
+            is_onboarded: true,
+          }),
         });
 
         console.log(`📨 Sent login link to Glide for row ${employee_row_id}`);
@@ -147,15 +155,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       }
     }
   }
-
   res.sendStatus(200);
 });
 
 // 🌐 Health check route
-app.get('/', (req, res) => {
-  res.send('Tips & Trim API is live!');
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.get('/', (req, res) => res.send('Tips & Trim API is live!'));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
