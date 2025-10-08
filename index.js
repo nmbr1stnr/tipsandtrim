@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
@@ -14,18 +13,23 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY_1, {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS (optional but helpful)
+// Enable CORS
 app.use(cors());
 
 // Mappings file path on Render disk
 const mappingsPath = '/data/mappings.json';
 
-// Conditional body parser to avoid conflict with webhook raw body
+// Manual raw body collector (avoids body-parser JSON errors)
 app.use((req, res, next) => {
-  if (req.originalUrl === '/webhook') {
-    next(); // Skip JSON parsing for raw webhook
+  if (req.originalUrl === '/webhook' || req.originalUrl === '/create-connected-account') {
+    let data = '';
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      req.rawBody = data;
+      next();
+    });
   } else {
-    bodyParser.json()(req, res, next);
+    express.json()(req, res, next);
   }
 });
 
@@ -41,24 +45,25 @@ try {
 
 // Create connected account and onboarding link
 app.post('/create-connected-account', async (req, res) => {
-  let data = req.body.body || req.body;
+  let data;
 
-  // Handle malformed Glide payload (string body without braces)
-  if (typeof data === 'string') {
-    try {
+  // Try to parse manually
+  try {
+    // If Glide sends weird "body" structure
+    let parsed = req.rawBody ? JSON.parse(req.rawBody) : req.body;
+    data = parsed.body || parsed;
+
+    // If "body" is a malformed string, fix it
+    if (typeof data === 'string') {
       if (!data.trim().startsWith('{')) data = `{${data}}`;
       data = JSON.parse(data);
-    } catch (err) {
-      console.error('❌ Invalid JSON format in request body:', data);
-      return res.status(400).json({ error: 'Invalid JSON body format' });
     }
+  } catch (err) {
+    console.error('❌ Failed to parse incoming body:', req.rawBody);
+    return res.status(400).json({ error: 'Invalid JSON body format' });
   }
 
-  if (!data) {
-    return res.status(400).json({ error: 'Missing request body or data' });
-  }
-
-  const { employee_row_id, name, email, employer_email, type, business_type } = data;
+  const { employee_row_id, name, email, employer_email, type, business_type } = data || {};
 
   if (!email || !employee_row_id) {
     return res.status(400).json({ error: 'Missing required fields: email or employee_row_id' });
